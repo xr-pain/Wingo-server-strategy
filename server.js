@@ -44,6 +44,30 @@ function normalize(raw) {
   };
 }
 
+// Worker theke fetch (browser er moto header diye, non-200 hole o body porbe)
+const SELF_ORIGIN = 'https://wingo-server-strategy.onrender.com';
+async function fetchWorker(game) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(`${WORKER_URL}/live?game=${game}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': SELF_ORIGIN,
+        'Referer': SELF_ORIGIN + '/'
+      },
+      signal: ctrl.signal
+    });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) {}
+    return { httpStatus: res.status, json, raw: text.slice(0, 500) };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 // ==========================================
 // Supabase theke History
 // ==========================================
@@ -230,17 +254,43 @@ loadHistory(1);
 // Response: { status, winGo_30S: {status,issue,number,color}, winGo_1M: {...} }
 app.get('/api/live', async (req, res) => {
   try {
-    const [r30S, r1M] = await Promise.all([
-      fetchJson(`${WORKER_URL}/live?game=WinGo_30S`),
-      fetchJson(`${WORKER_URL}/live?game=WinGo_1M`)
-    ]);
-    res.json({
-      status: 'success',
-      winGo_30S: normalize(r30S),
-      winGo_1M: normalize(r1M)
-    });
+    const [r30S, r1M] = await Promise.all([fetchWorker('WinGo_30S'), fetchWorker('WinGo_1M')]);
+    let d30S = normalize(r30S.json);
+    let d1M = normalize(r1M.json);
+    let source = 'worker';
+
+    // Worker fail korle Supabase er latest row use korbe
+    if (!d30S || !d1M) {
+      const [h30S, h1M] = await Promise.all([
+        getHistoryData('WinGo_30S', 1),
+        getHistoryData('WinGo_1M', 1)
+      ]);
+      if (!d30S && h30S[0]) { d30S = { status: 'success', ...h30S[0] }; source = 'supabase'; }
+      if (!d1M && h1M[0]) { d1M = { status: 'success', ...h1M[0] }; source = 'supabase'; }
+    }
+
+    if (!d30S && !d1M) {
+      console.error('[Live] worker fail —', r30S.httpStatus, r30S.raw);
+      return res.status(502).json({
+        status: 'error',
+        message: 'Worker theke data ashe nai',
+        worker_30S: { http: r30S.httpStatus, body: r30S.raw },
+        worker_1M: { http: r1M.httpStatus, body: r1M.raw }
+      });
+    }
+    res.json({ status: 'success', source, winGo_30S: d30S, winGo_1M: d1M });
   } catch (e) {
     console.error('[Live] fail —', e.message);
+    res.status(500).json({ status: 'error', message: e.message });
+  }
+});
+
+// Debug: Worker er asol response dekhar jonno
+app.get('/api/debug', async (req, res) => {
+  try {
+    const [a, b] = await Promise.all([fetchWorker('WinGo_30S'), fetchWorker('WinGo_1M')]);
+    res.json({ worker_30S: a, worker_1M: b });
+  } catch (e) {
     res.status(500).json({ status: 'error', message: e.message });
   }
 });
