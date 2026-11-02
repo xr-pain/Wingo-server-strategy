@@ -1,34 +1,33 @@
 const express = require('express');
 const app = express();
 
-// আপনার Cloudflare Worker এর লিংক
-const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
+const SUPABASE_URL = 'https://jnhpnsfdnckkpnyrmpkc.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_t52nYcH5sW43P48ZSUE4eg_GWwyg_ma';
 
-// Render থেকে Worker-এ ফেচ করার ফাংশন
-async function fetchFromWorker(game) {
+// Supabase থেকে শুধু লেটেস্ট ১টি ডেটা আনার ফাংশন
+async function fetchLatestFromSupabase(game) {
   try {
-    const res = await fetch(`${WORKER_URL}/history?game=${game}&limit=50`);
+    // limit=1 দেওয়া হয়েছে যাতে শুধু ১টি ডেটা আসে
+    const url = `${SUPABASE_URL}/rest/v1/wingo_history?game=eq.${game}&select=issue,number,color&order=issue.desc&limit=1`;
+    const res = await fetch(url, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    return json.results || [];
+    return json.length > 0 ? json[0] : null;
   } catch (e) {
-    console.error(`[${game}] fetch failed —`, e.message);
-    return [];
+    console.error(`[${game}] fail —`, e.message);
+    return null;
   }
 }
 
-// API এন্ডপয়েন্ট যা ব্রাউজার কল করবে
-app.get('/api/data', async (req, res) => {
+// API এন্ডপয়েন্ট
+app.get('/api/latest', async (req, res) => {
   const [data30S, data1M] = await Promise.all([
-    fetchFromWorker('WinGo_30S'),
-    fetchFromWorker('WinGo_1M')
+    fetchLatestFromSupabase('WinGo_30S'),
+    fetchLatestFromSupabase('WinGo_1M')
   ]);
-
-  res.json({
-    status: 'success',
-    winGo_30S: data30S,
-    winGo_1M: data1M
-  });
+  res.json({ status: 'success', winGo_30S: data30S, winGo_1M: data1M });
 });
 
 app.get('/', (_, res) => res.type('html').send(PAGE));
@@ -36,62 +35,85 @@ app.listen(process.env.PORT || 3000, () => console.log('up'));
 
 // ---------- UI ----------
 const PAGE = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>WinGo History</title>
+<html><head><meta charset="utf-8"><title>WinGo Latest Result</title>
 <style>
- body{font-family:sans-serif;margin:20px;background:#111;color:#eee}
- .wrap{display:flex;gap:20px;flex-wrap:wrap}
- .col{flex:1;min-width:320px} h2{margin:0 0 6px}
- .meta{font-size:12px;opacity:.75;margin-bottom:8px}
- table{width:100%;border-collapse:collapse;font-size:13px}
- th,td{padding:4px 6px;border-bottom:1px solid #333;text-align:left}
- th{opacity:.7;font-weight:500}
- .red{color:#ff6b6b}.green{color:#51cf66}.violet{color:#b197fc}
+ body{font-family:sans-serif;margin:0;padding:20px;background:#0f0f13;color:#eee;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh}
+ h1{font-size:24px;margin-bottom:30px;color:#aaa}
+ .container{display:flex;gap:30px;flex-wrap:wrap;justify-content:center;width:100%;max-width:800px}
+ .card{background:#1c1c24;border:1px solid #333;border-radius:12px;padding:30px;flex:1;min-width:280px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5)}
+ .title{font-size:20px;font-weight:bold;margin-bottom:20px;color:#fff}
+ .issue{font-size:14px;color:#888;margin-bottom:20px}
+ .circle{width:80px;height:80px;border-radius:50%;margin:0 auto 15px auto;display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:bold;color:#fff;background:#333;}
+ .color-text{font-size:22px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;}
+ .red-bg{background:#ff4757; box-shadow:0 0 20px rgba(255,71,87,0.6);}
+ .green-bg{background:#2ed573; box-shadow:0 0 20px rgba(46,213,115,0.6);}
+ .violet-bg{background:#a55eea; box-shadow:0 0 20px rgba(165,94,234,0.6);}
+ .mix-bg{background:linear-gradient(135deg, #ff4757 50%, #a55eea 50%);}
+ .status{font-size:12px;color:#666;margin-top:40px;}
 </style></head><body>
-<h1>WinGo History</h1>
-<div class="wrap">
- <div class="col"><h2>30 Seconds</h2><div class="meta" id="meta-30S">loading…</div><table id="tbl-30S"></table></div>
- <div class="col"><h2>1 Minute</h2><div class="meta" id="meta-1M">loading…</div><table id="tbl-1M"></table></div>
+<h1>WinGo Live Results</h1>
+<div class="container">
+  <div class="card" id="card-30S">
+    <div class="title">WinGo 30 Seconds</div>
+    <div class="issue" id="issue-30S">লোড হচ্ছে...</div>
+    <div id="result-30S"></div>
+  </div>
+  <div class="card" id="card-1M">
+    <div class="title">WinGo 1 Minute</div>
+    <div class="issue" id="issue-1M">লোড হচ্ছে...</div>
+    <div id="result-1M"></div>
+  </div>
 </div>
+<div class="status" id="status">স্বয়ংক্রিয়ভাবে আপডেট হচ্ছে...</div>
+
 <script>
-function bd(ms){
-  if(!ms) return '—';
-  return new Date(ms).toLocaleString('en-GB',{timeZone:'Asia/Dhaka',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});
+function getStyleClass(colorStr) {
+  if(!colorStr) return {cls: '', txt: ''};
+  const c = colorStr.toLowerCase();
+  if(c.includes('red') && c.includes('violet')) return {cls: 'mix-bg', txt: 'Red / Violet'};
+  if(c.includes('green') && c.includes('violet')) return {cls: 'mix-bg', txt: 'Green / Violet'};
+  if(c.includes('red')) return {cls: 'red-bg', txt: 'Red'};
+  if(c.includes('green')) return {cls: 'green-bg', txt: 'Green'};
+  if(c.includes('violet')) return {cls: 'violet-bg', txt: 'Violet'};
+  return {cls: '', txt: colorStr};
 }
-function cls(c){
-  if(!c) return '';
-  if(c.includes('red')) return 'red';
-  if(c.includes('green')) return 'green';
-  return 'violet';
-}
-function render(key, list){
-  const t = document.getElementById('tbl-'+key);
-  const m = document.getElementById('meta-'+key);
+
+function renderCard(key, data) {
+  const issueEl = document.getElementById('issue-'+key);
+  const resultEl = document.getElementById('result-'+key);
   
-  if(!list || list.length === 0){ 
-    m.textContent = 'কোনো ডেটা নেই'; 
-    t.innerHTML = ''; 
-    return; 
+  if(!data) {
+    issueEl.textContent = 'কোনো ডেটা পাওয়া যায়নি';
+    resultEl.innerHTML = '';
+    return;
   }
   
-  const last = list[0];
-  m.textContent = 'সর্বশেষ রাউন্ড: ' + last.issue;
+  issueEl.textContent = 'Issue: ' + data.issue;
   
-  t.innerHTML = '<tr><th>Issue</th><th>No.</th><th>Color</th></tr>' +
-    list.map(r => '<tr><td>'+r.issue+'</td><td>'+r.number+'</td><td class="'+cls(r.color)+'">'+r.color+'</td></tr>').join('');
+  const style = getStyleClass(data.color);
+  
+  resultEl.innerHTML = \`
+    <div class="circle \${style.cls}">\${data.number}</div>
+    <div class="color-text \${data.color ? data.color.split(',')[0] : ''}">\${style.txt}</div>
+  \`;
 }
 
 async function poll(){
  try {
-  const res = await fetch('/api/data');
+  const res = await fetch('/api/latest');
   const j = await res.json();
   
   if(j.status === 'success'){
-    render('30S', j.winGo_30S);
-    render('1M', j.winGo_1M);
+    renderCard('30S', j.winGo_30S);
+    renderCard('1M', j.winGo_1M);
+    document.getElementById('status').textContent = 'সর্বশেষ আপডেট: ' + new Date().toLocaleTimeString('en-GB');
   }
- } catch(e) { console.error(e); }
+ } catch(e) { 
+   console.error(e); 
+   document.getElementById('status').textContent = 'কানেকশন এরর!';
+ }
 }
 
 poll(); 
-setInterval(poll, 5000); // প্রতি ৫ সেকেন্ডে Worker থেকে নতুন ডেটা চেক করবে
+setInterval(poll, 3000); // প্রতি ৩ সেকেন্ডে আপডেট হবে
 </script></body></html>`;
