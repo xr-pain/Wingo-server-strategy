@@ -3,11 +3,10 @@ const app = express();
 
 const SUPABASE_URL = 'https://jnhpnsfdnckkpnyrmpkc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_t52nYcH5sW43P48ZSUE4eg_GWwyg_ma';
+const WORKER_SYNC_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev/sync';
 
-// Supabase থেকে শুধু লেটেস্ট ১টি ডেটা আনার ফাংশন
 async function fetchLatestFromSupabase(game) {
   try {
-    // limit=1 দেওয়া হয়েছে যাতে শুধু ১টি ডেটা আসে
     const url = `${SUPABASE_URL}/rest/v1/wingo_history?game=eq.${game}&select=issue,number,color&order=issue.desc&limit=1`;
     const res = await fetch(url, {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
@@ -21,13 +20,21 @@ async function fetchLatestFromSupabase(game) {
   }
 }
 
-// API এন্ডপয়েন্ট
 app.get('/api/latest', async (req, res) => {
-  const [data30S, data1M] = await Promise.all([
-    fetchLatestFromSupabase('WinGo_30S'),
-    fetchLatestFromSupabase('WinGo_1M')
-  ]);
-  res.json({ status: 'success', winGo_30S: data30S, winGo_1M: data1M });
+  try {
+    // ১. প্রথমে Worker-কে হিট করছি যাতে লেটেস্ট ডেটা সুপাবেসে সেভ হয়ে যায়
+    await fetch(WORKER_SYNC_URL).catch(() => console.log("Worker sync failed"));
+    
+    // ২. এরপর সুপাবেস থেকে ডেটা রিড করছি
+    const [data30S, data1M] = await Promise.all([
+      fetchLatestFromSupabase('WinGo_30S'),
+      fetchLatestFromSupabase('WinGo_1M')
+    ]);
+    
+    res.json({ status: 'success', winGo_30S: data30S, winGo_1M: data1M });
+  } catch (e) {
+    res.status(500).json({ status: 'error' });
+  }
 });
 
 app.get('/', (_, res) => res.type('html').send(PAGE));
@@ -115,5 +122,5 @@ async function poll(){
 }
 
 poll(); 
-setInterval(poll, 3000); // প্রতি ৩ সেকেন্ডে আপডেট হবে
+setInterval(poll, 5000); // প্রতি ৫ সেকেন্ডে আপডেট হবে
 </script></body></html>`;
