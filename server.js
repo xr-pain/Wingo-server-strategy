@@ -1,45 +1,48 @@
 const express = require('express');
 const app = express();
 
+// আপনার Worker এবং Supabase-এর ডিটেইলস
 const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
 const SUPABASE_URL = 'https://jnhpnsfdnckkpnyrmpkc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_t52nYcH5sW43P48ZSUE4eg_GWwyg_ma';
 
-// বটের জন্য ফ্রেশ ডেটা (সরাসরি Worker থেকে)
-app.get('/api/live', async (req, res) => {
+// ==========================================
+// Supabase থেকে পুরনো ডেটা (History) আনা
+// ==========================================
+async function getHistoryData(game, page) {
+  const limit = 50;
+  const offset = (page - 1) * limit;
   try {
-    const [r30, r1m] = await Promise.all([
-      fetch(`${WORKER_URL}/live?game=WinGo_30S`).then(r => r.json()),
-      fetch(`${WORKER_URL}/live?game=WinGo_1M`).then(r => r.json())
-    ]);
-    res.json({ 
-      status: 'success', 
-      winGo_30S: r30.results ? r30.results[0] : null, 
-      winGo_1M: r1m.results ? r1m.results[0] : null 
+    const url = `${SUPABASE_URL}/rest/v1/wingo_history?game=eq.${game}&select=issue,number,color&order=issue.desc&limit=${limit}&offset=${offset}`;
+    const res = await fetch(url, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
   } catch (e) {
-    res.status(500).json({ status: 'error', message: e.message });
+    console.error(`[History] ${game} fail —`, e.message);
+    return [];
   }
-});
+}
 
-// বটের জন্য রেজাল্ট চেক (Worker History থেকে)
+// ==========================================
+// API Routes
+// ==========================================
 app.get('/api/history', async (req, res) => {
   const game = req.query.game === 'WinGo_1M' ? 'WinGo_1M' : 'WinGo_30S';
-  try {
-    const r = await fetch(`${WORKER_URL}/history?game=${game}&limit=50`);
-    const data = await r.json();
-    res.json({ status: 'success', data: data.results || [] });
-  } catch (e) {
-    res.status(500).json({ status: 'error' });
-  }
+  const page = parseInt(req.query.page) || 1;
+  const data = await getHistoryData(game, page);
+  res.json({ status: 'success', data: data });
 });
 
-// HTML পেজ (আপনার আগের ডিজাইন)
+// Pages
 app.get('/', (_, res) => res.type('html').send(LIVE_PAGE));
 app.get('/history', (_, res) => res.type('html').send(HISTORY_PAGE));
+app.listen(process.env.PORT || 3000, () => console.log('Server is running!'));
 
-app.listen(process.env.PORT || 3000, () => console.log('Render 1 is live'));
-
+// ==========================================
+// HTML: LIVE PAGE (লেটেস্ট ডেটা - সরাসরি Worker থেকে)
+// ==========================================
 const LIVE_PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo Live</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -81,7 +84,9 @@ const LIVE_PAGE = `<!DOCTYPE html>
 <div class="status" id="status">স্বয়ংক্রিয়ভাবে আপডেট হচ্ছে...</div>
 
 <script>
+// সরাসরি Cloudflare Worker থেকে ডেটা আনবে (Render-এর IP ব্লক হবে না)
 const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
+
 function getStyleClass(colorStr) {
   if(!colorStr) return {cls: '', txt: ''};
   const c = colorStr.toLowerCase();
@@ -92,34 +97,122 @@ function getStyleClass(colorStr) {
   if(c.includes('violet')) return {cls: 'violet-bg', txt: 'Violet'};
   return {cls: '', txt: colorStr};
 }
+
 function renderCard(key, data) {
   const issueEl = document.getElementById('issue-'+key);
   const resultEl = document.getElementById('result-'+key);
-  if(!data || data.status !== 'success') { issueEl.textContent = 'কানেক্ট হচ্ছে...'; return; }
+  if(!data || data.status !== 'success') {
+    issueEl.textContent = 'কানেক্ট হচ্ছে...';
+    return;
+  }
   issueEl.textContent = 'Issue: ' + data.issue;
   const style = getStyleClass(data.color);
-  resultEl.innerHTML = \`<div class="circle \${style.cls}">\${data.number}</div><div class="color-text">\${style.txt}</div>\`;
+  resultEl.innerHTML = \`
+    <div class="circle \${style.cls}">\${data.number}</div>
+    <div class="color-text \${data.color ? data.color.split(',')[0] : ''}">\${style.txt}</div>
+  \`;
 }
+
 async function poll(){
  try {
   const [res30S, res1M] = await Promise.all([
     fetch(WORKER_URL + '/live?game=WinGo_30S').then(r => r.json()),
     fetch(WORKER_URL + '/live?game=WinGo_1M').then(r => r.json())
   ]);
-  renderCard('30S', res30S.results ? res30S.results[0] : null);
-  renderCard('1M', res1M.results ? res1M.results[0] : null);
+  
+  renderCard('30S', res30S);
+  renderCard('1M', res1M);
   document.getElementById('status').textContent = 'সর্বশেষ আপডেট: ' + new Date().toLocaleTimeString('en-GB');
- } catch(e) { document.getElementById('status').textContent = 'কানেকশন এরর!'; }
+  
+ } catch(e) { 
+   document.getElementById('status').textContent = 'কানেকশন এরর!';
+ }
 }
-poll(); setInterval(poll, 3000);
+
+poll(); 
+setInterval(poll, 3000); // প্রতি ৩ সেকেন্ডে আপডেট হবে
 </script></body></html>`;
 
+// ==========================================
+// HTML: HISTORY PAGE (পুরনো ডেটা - Supabase থেকে)
+// ==========================================
 const HISTORY_PAGE = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>History</title>
-<style>body{font-family:sans-serif;background:#0f0f13;color:#eee;padding:20px}table{width:100%;max-width:600px;margin:auto;border-collapse:collapse;background:#1c1c24}th,td{padding:10px;border-bottom:1px solid #333;text-align:left}</style>
-</head><body><h2 style="text-align:center">History</h2><table><thead><tr><th>Issue</th><th>Result</th><th>Color</th></tr></thead><tbody id="b"></tbody></table>
+<html><head><meta charset="utf-8"><title>WinGo History</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+ body{font-family:sans-serif;margin:0;padding:20px;background:#0f0f13;color:#eee;display:flex;flex-direction:column;align-items:center}
+ h1{font-size:24px;margin-bottom:10px;color:#fff}
+ .nav{display:flex;gap:15px;margin-bottom:30px}
+ .nav a{color:#aaa;text-decoration:none;padding:8px 16px;border-radius:8px;background:#1c1c24;border:1px solid #333;font-size:14px;transition:0.3s}
+ .nav a.active, .nav a:hover{background:#333;color:#fff}
+ .controls{margin-bottom:20px;display:flex;gap:10px}
+ select, button {padding:10px;border-radius:8px;background:#1c1c24;color:#fff;border:1px solid #444;cursor:pointer;font-size:14px}
+ button:hover{background:#333}
+ table{width:100%;max-width:600px;border-collapse:collapse;font-size:14px;background:#1c1c24;border-radius:8px;overflow:hidden}
+ th,td{padding:10px;border-bottom:1px solid #333;text-align:left}
+ th{background:#2a2a35;color:#aaa;font-weight:normal}
+ .red{color:#ff4757}.green{color:#2ed573}.violet{color:#a55eea}
+ .pagination{display:flex;gap:15px;align-items:center;margin-top:20px}
+ .page-info{font-size:14px;color:#888}
+</style></head><body>
+<h1>WinGo Full History</h1>
+<div class="nav">
+  <a href="/">Live Data</a>
+  <a href="/history" class="active">Full History</a>
+</div>
+
+<div class="controls">
+  <select id="game-select" onchange="loadHistory(1)">
+    <option value="WinGo_30S">WinGo 30S</option>
+    <option value="WinGo_1M">WinGo 1M</option>
+  </select>
+  <button onclick="loadHistory(1)">রিফ্রেশ</button>
+</div>
+
+<table>
+  <thead><tr><th>Issue</th><th>Result</th><th>Color</th></tr></thead>
+  <tbody id="history-body">
+    <tr><td colspan="3" style="text-align:center;">লোড হচ্ছে...</td></tr>
+  </tbody>
+</table>
+
+<div class="pagination">
+  <button onclick="loadHistory(currentPage - 1)" id="btn-prev" disabled>আগের পেজ</button>
+  <span class="page-info" id="page-info">পেজ: 1</span>
+  <button onclick="loadHistory(currentPage + 1)" id="btn-next">পরের পেজ</button>
+</div>
+
 <script>
-fetch('/api/history?game=WinGo_30S').then(r=>r.json()).then(j=>{
- if(j.data) document.getElementById('b').innerHTML = j.data.map(r=>'<tr><td>'+r.issue+'</td><td>'+r.number+'</td><td>'+r.color+'</td></tr>').join('');
-});
+let currentPage = 1;
+function cls(c){ if(!c) return ''; if(c.includes('red')) return 'red'; if(c.includes('green')) return 'green'; return 'violet'; }
+
+async function loadHistory(page) {
+  if (page < 1) return;
+  const game = document.getElementById('game-select').value;
+  const tbody = document.getElementById('history-body');
+  tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">লোড হচ্ছে...</td></tr>';
+  
+  try {
+    const res = await fetch('/api/history?game='+game+'&page='+page);
+    const j = await res.json();
+    if(j.status === 'success'){
+      const list = j.data;
+      if(list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">এই পেজে কোনো ডেটা নেই</td></tr>';
+        return;
+      }
+      tbody.innerHTML = list.map(r => 
+        '<tr><td>'+r.issue+'</td><td><b>'+r.number+'</b></td><td class="'+cls(r.color)+'">'+r.color+'</td></tr>'
+      ).join('');
+      
+      currentPage = page;
+      document.getElementById('page-info').textContent = 'পেজ: ' + currentPage;
+      document.getElementById('btn-prev').disabled = (currentPage === 1);
+      document.getElementById('btn-next').disabled = (list.length < 50);
+    }
+  } catch(e) { 
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">এরর হয়েছে!</td></tr>';
+  }
+}
+loadHistory(1);
 </script></body></html>`;
