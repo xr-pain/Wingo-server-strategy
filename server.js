@@ -1,18 +1,20 @@
 const express = require('express');
 const app = express();
 
-// বেস URL গুলো
 const BASE_URLS = {
   '30S': 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
   '1M':  'https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json'
 };
 
-// পাবলিক প্রক্সি (Cloudflare বাইপাসের জন্য)
-const PROXY = 'https://api.allorigins.win/raw?url=';
+// একাধিক ফ্রি প্রক্সির লিস্ট
+const PROXIES = [
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+];
 
 const INTERVAL = 30 * 1000;      // ৩০ সেকেন্ড
-const TIMEOUT  = 10 * 1000;      // ১০ সেকেন্ড
-const RETRIES  = 3;              // ৩ বার
+const TIMEOUT  = 15 * 1000;      // টাইমআউট ১৫ সেকেন্ড বাড়ানো হলো
 const DAILY_CAP = 70000;
 
 const cache = {
@@ -20,70 +22,51 @@ const cache = {
   '1M':  { data: null, updatedAt: null }
 };
 
-const counter = { date: today(), count: 0 };
-function today() { return new Date().toISOString().slice(0, 10); }
-function rollover() {
-  if (today() !== counter.date) { counter.date = today(); counter.count = 0; }
-}
-
-async function fetchWithTimeout(key) {
-  const targetUrl = BASE_URLS[key];
-  // প্রক্সি URL তৈরি
-  const proxyUrl = PROXY + encodeURIComponent(targetUrl);
-
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), TIMEOUT);
-
-  try {
-    const res = await fetch(proxyUrl, { signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    
-    const text = await res.text();
-    // চেক করা হচ্ছে ডেটা JSON কিনা (HTML চ্যালেঞ্জ পেজ আটকাতে)
-    if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
-      throw new Error('Cloudflare challenge blocked the proxy');
-    }
-    return JSON.parse(text);
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function fetchWithRetry(key) {
-  let lastErr;
-  for (let i = 1; i <= RETRIES; i++) {
-    try {
-      return await fetchWithTimeout(key);
-    } catch (e) {
-      lastErr = e;
-      console.warn(`retry ${i}/${RETRIES} —`, e.message);
-      if (i < RETRIES) await new Promise(r => setTimeout(r, 1000 * i));
-    }
-  }
-  throw lastErr;
-}
+const counter = { date: new Date().toISOString().slice(0, 10), count: 0 };
 
 async function fetchData(key) {
-  rollover();
-  if (counter.count >= DAILY_CAP) return;
-  try {
-    const json = await fetchWithRetry(key);
-    counter.count++;
-    cache[key] = { data: json, updatedAt: Date.now() };
-    console.log(`[${key}] ok — ${counter.count}/${DAILY_CAP}`);
-  } catch (e) {
-    console.error(`[${key}] fail —`, e.message);
+  const baseUrl = BASE_URLS[key];
+  
+  // প্রতিটি প্রক্সি একে একে ট্রাই করবে
+  for (let proxyFn of PROXIES) {
+    const proxyUrl = proxyFn(baseUrl);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), TIMEOUT);
+
+    try {
+      const res = await fetch(proxyUrl, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      
+      const text = await res.text();
+      if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+        throw new Error('Blocked by Cloudflare Challenge');
+      }
+      
+      const json = JSON.parse(text);
+      clearTimeout(t);
+      
+      // সফল হলে ডেটা ক্যাশে সেভ হবে
+      counter.count++;
+      cache[key] = { data: json, updatedAt: Date.now() };
+      console.log(`[${key}] ok via ${proxyUrl.split('/')[2]} — ${counter.count}/${DAILY_CAP}`);
+      return; // সফল হলে লুপ শেষ
+      
+    } catch (e) {
+      clearTimeout(t);
+      console.warn(`[${key}] proxy failed (${proxyUrl.split('/')[2]}) — ${e.message}`);
+      // পরের প্রক্সি ট্রাই করবে
+    }
   }
+  console.error(`[${key}] fail — All proxies failed or timed out.`);
 }
 
-// ৩০ সেকেন্ড পর পর
+// প্রতি ৩০ সেকেন্ডে ফেচ
 setInterval(() => { fetchData('30S'); fetchData('1M'); }, INTERVAL);
 fetchData('30S');
 fetchData('1M');
 
 app.get('/api/data', (_, res) => res.json({ cache, counter }));
 app.get('/', (_, res) => res.type('html').send(PAGE));
-
 app.listen(process.env.PORT || 3000, () => console.log('up'));
 
 // ---------- UI (আগের মতোই) ----------
