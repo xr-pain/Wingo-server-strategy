@@ -6,15 +6,9 @@ const URLS = {
   '1M':  'https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json'
 };
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36',
-  'Accept': 'application/json, text/plain, */*',
-  'Referer': 'https://draw.ar-lottery01.com/'
-};
-
 const INTERVAL = 30 * 1000;      // ৩০ সেকেন্ড
 const TIMEOUT  = 10 * 1000;      // ১০ সেকেন্ড
-const RETRIES  = 3;              // ৩ বার
+const RETRIES  = 3;              // ৩ বার রিট্রাই
 const DAILY_CAP = 70000;
 
 const cache = {
@@ -28,28 +22,48 @@ function rollover() {
   if (today() !== counter.date) { counter.date = today(); counter.count = 0; }
 }
 
-// ১০s timeout সহ fetch
+// Cloudflare বাইপাস করার ফাংশন
 async function fetchWithTimeout(url) {
+  // got-scraping ডাইনামিক ইমপোর্ট (ESM সাপোর্টের জন্য)
+  const { gotScraping } = await import('got-scraping');
+
+  // API-এর জন্য প্রয়োজনীয় কোয়েরি প্যারামিটার
+  const timestamp = Date.now();
+  const fullUrl = `${url}?pageSize=100&pageNo=1&_t=${timestamp}`;
+
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), TIMEOUT);
+
   try {
-    const res = await fetch(url, { headers: HEADERS, signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const res = await gotScraping({
+      url: fullUrl,
+      signal: ctrl.signal,
+      headerGeneratorOptions: {
+        browsers: [{ name: 'chrome' }],
+        devices: ['desktop'],
+        operatingSystems: ['windows'],
+      },
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://draw.ar-lottery01.com/',
+        'Origin': 'https://draw.ar-lottery01.com'
+      }
+    });
+    return JSON.parse(res.body);
   } finally {
     clearTimeout(t);
   }
 }
 
-// ৩ বার retry
 async function fetchWithRetry(url) {
   let lastErr;
   for (let i = 1; i <= RETRIES; i++) {
-    try { return await fetchWithTimeout(url); }
-    catch (e) {
+    try {
+      return await fetchWithTimeout(url);
+    } catch (e) {
       lastErr = e;
       console.warn(`retry ${i}/${RETRIES} —`, e.message);
-      if (i < RETRIES) await new Promise(r => setTimeout(r, 1000 * i)); // ব্যাকঅফ
+      if (i < RETRIES) await new Promise(r => setTimeout(r, 1000 * i));
     }
   }
   throw lastErr;
@@ -78,7 +92,7 @@ app.get('/', (_, res) => res.type('html').send(PAGE));
 
 app.listen(process.env.PORT || 3000, () => console.log('up'));
 
-// ---------- UI ----------
+// ---------- UI (আগের মতোই আছে, শুধু JSON ফিল্ড হ্যান্ডেল করার জন্য আপডেট করা) ----------
 const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo</title>
 <style>
@@ -104,17 +118,21 @@ function cls(c){if(!c)return'';if(c.includes('red'))return'red';if(c.includes('g
 function render(key,e){
  const t=document.getElementById('tbl-'+key),m=document.getElementById('meta-'+key);
  if(!e||!e.data){m.textContent='loading…';return;}
- const list=e.data.list||e.data.results||e.data.data||[];
+ 
+ // নতুন API-এর JSON স্ট্রাকচার অনুযায়ী ডেটা বের করা
+ const list=e.data.data || e.data.list || e.data.results || [];
  const last=list[0];
- m.textContent='Last fetch: '+bd(e.updatedAt)+'  |  Latest: '+(last?(last.issue||last.issueNumber||'—'):'—');
- t.innerHTML='<tr><th>Issue</th><th>No.</th><th>Color</th><th>Time (BD)</th></tr>'+
-  list.map(r=>'<tr><td>'+(r.issue||r.issueNumber||'—')+'</td><td>'+(r.number||r.num||'—')+'</td><td class="'+cls(r.color)+'">'+(r.color||'—')+'</td><td>'+(r.saved_at?bd(r.saved_at):'—')+'</td></tr>').join('');
+ 
+ m.textContent='Last fetch: '+bd(e.updatedAt)+'  |  Latest Issue: '+(last?(last.issueNumber||last.issue||'—'):'—');
+ 
+ t.innerHTML='<tr><th>Issue</th><th>No.</th><th>Color</th></tr>'+
+  list.map(r=>'<tr><td>'+(r.issueNumber||r.issue||'—')+'</td><td>'+(r.number||r.num||'—')+'</td><td class="'+cls(r.color)+'">'+(r.color||'—')+'</td></tr>').join('');
 }
 async function poll(){
  try{
   const j=await(await fetch('/api/data')).json();
   render('30S',j.cache['30S']);render('1M',j.cache['1M']);
-  document.getElementById('counter').textContent='fetch count ('+j.counter.date+'): '+j.counter.count+' / 70000';
+  document.getElementById('counter').textContent='Cloudflare fetch count ('+j.counter.date+'): '+j.counter.count+' / 70000';
  }catch(e){console.error(e);}
 }
 poll();setInterval(poll,1000);
