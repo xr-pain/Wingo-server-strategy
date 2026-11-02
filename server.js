@@ -1,87 +1,108 @@
 const express = require('express');
 const app = express();
 
-// আপনার Worker এর লিংক
 const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
+const SUPABASE_URL = 'https://jnhpnsfdnckkpnyrmpkc.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_t52nYcH5sW43P48ZSUE4eg_GWwyg_ma';
 
-// ১. Worker থেকে সরাসরি লাইভ ডেটা আনার ফাংশন
-async function fetchLiveFromWorker(game) {
+// ==========================================
+// ১. Worker থেকে লাইভ ডেটা (Fallback সহ)
+// ==========================================
+async function getLiveData(game) {
+  // চেষ্টা ১: Worker থেকে আনা
   try {
-    const res = await fetch(`${WORKER_URL}/live?game=${game}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
-    return json.results && json.results.length > 0 ? json.results[0] : null;
+    const res = await fetch(`${WORKER_URL}/live?game=${game}`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.results && json.results.length > 0) {
+        return json.results[0]; // Worker সফল হয়েছে
+      }
+    }
   } catch (e) {
-    console.error(`[${game}] live fail —`, e.message);
-    return null;
+    console.log(`Worker failed for ${game}, using Supabase backup...`);
   }
+
+  // চেষ্টা ২: Worker ফেইল করলে Supabase থেকে আনা
+  try {
+    const url = `${SUPABASE_URL}/rest/v1/wingo_history?game=eq.${game}&select=issue,number,color&order=issue.desc&limit=1`;
+    const res = await fetch(url, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (res.ok) {
+      const json = await res.json();
+      return json.length > 0 ? json[0] : null;
+    }
+  } catch (e) {
+    console.error(`Supabase backup failed for ${game}`);
+  }
+  return null;
 }
 
-// ২. Worker (Supabase) থেকে হিস্ট্রি ডেটা আনার ফাংশন
-async function fetchHistoryFromWorker(game, page) {
+// ==========================================
+// ২. Supabase থেকে হিস্ট্রি ডেটা
+// ==========================================
+async function getHistoryData(game, page) {
+  const limit = 50;
+  const offset = (page - 1) * limit;
   try {
-    const res = await fetch(`${WORKER_URL}/history?game=${game}&page=${page}&limit=50`);
+    const url = `${SUPABASE_URL}/rest/v1/wingo_history?game=eq.${game}&select=issue,number,color&order=issue.desc&limit=${limit}&offset=${offset}`;
+    const res = await fetch(url, {
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
-    return json.results || [];
+    return await res.json();
   } catch (e) {
-    console.error(`[${game}] history fail —`, e.message);
     return [];
   }
 }
 
-// --- APIs ---
-
-// লাইভ ডেটা API
+// ==========================================
+// APIs
+// ==========================================
 app.get('/api/live', async (req, res) => {
   const [data30S, data1M] = await Promise.all([
-    fetchLiveFromWorker('WinGo_30S'),
-    fetchLiveFromWorker('WinGo_1M')
+    getLiveData('WinGo_30S'),
+    getLiveData('WinGo_1M')
   ]);
   res.json({ status: 'success', winGo_30S: data30S, winGo_1M: data1M });
 });
 
-// হিস্ট্রি ডেটা API
 app.get('/api/history', async (req, res) => {
   const game = req.query.game === 'WinGo_1M' ? 'WinGo_1M' : 'WinGo_30S';
   const page = parseInt(req.query.page) || 1;
-  const data = await fetchHistoryFromWorker(game, page);
-  res.json({ status: 'success', data: data, page: page });
+  const data = await getHistoryData(game, page);
+  res.json({ status: 'success', data: data });
 });
 
-// --- Pages ---
-
-// মেইন লাইভ পেজ
+// Pages
 app.get('/', (_, res) => res.type('html').send(LIVE_PAGE));
-
-// হিস্ট্রি পেজ
 app.get('/history', (_, res) => res.type('html').send(HISTORY_PAGE));
-
-app.listen(process.env.PORT || 3000, () => console.log('up'));
+app.listen(process.env.PORT || 3000, () => console.log('Server is running!'));
 
 // ==========================================
-// ---------- UI: LIVE PAGE ----------
+// ৩. HTML: লাইভ পেজ
 // ==========================================
 const LIVE_PAGE = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>WinGo Live Result</title>
+<html><head><meta charset="utf-8"><title>WinGo Live</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
  body{font-family:sans-serif;margin:0;padding:20px;background:#0f0f13;color:#eee;display:flex;flex-direction:column;align-items:center;min-height:90vh}
  h1{font-size:24px;margin-bottom:10px;color:#fff}
- .nav{display:flex;gap:15px;margin-bottom:30px;}
+ .nav{display:flex;gap:15px;margin-bottom:30px}
  .nav a{color:#aaa;text-decoration:none;padding:8px 16px;border-radius:8px;background:#1c1c24;border:1px solid #333;font-size:14px;transition:0.3s}
  .nav a.active, .nav a:hover{background:#333;color:#fff}
  .container{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;width:100%;max-width:600px}
  .card{background:#1c1c24;border:1px solid #333;border-radius:12px;padding:25px;flex:1;min-width:260px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5)}
  .title{font-size:18px;font-weight:bold;margin-bottom:15px;color:#fff}
  .issue{font-size:13px;color:#888;margin-bottom:15px}
- .circle{width:70px;height:70px;border-radius:50%;margin:0 auto 15px auto;display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:bold;color:#fff;background:#333;}
- .color-text{font-size:20px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;}
- .red-bg{background:#ff4757; box-shadow:0 0 20px rgba(255,71,87,0.6);}
- .green-bg{background:#2ed573; box-shadow:0 0 20px rgba(46,213,115,0.6);}
- .violet-bg{background:#a55eea; box-shadow:0 0 20px rgba(165,94,234,0.6);}
- .mix-bg{background:linear-gradient(135deg, #ff4757 50%, #a55eea 50%);}
- .status{font-size:12px;color:#666;margin-top:30px;}
+ .circle{width:70px;height:70px;border-radius:50%;margin:0 auto 15px auto;display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:bold;color:#fff;background:#333}
+ .color-text{font-size:20px;font-weight:bold;text-transform:uppercase;letter-spacing:1px}
+ .red-bg{background:#ff4757;box-shadow:0 0 20px rgba(255,71,87,0.6)}
+ .green-bg{background:#2ed573;box-shadow:0 0 20px rgba(46,213,115,0.6)}
+ .violet-bg{background:#a55eea;box-shadow:0 0 20px rgba(165,94,234,0.6)}
+ .mix-bg{background:linear-gradient(135deg, #ff4757 50%, #a55eea 50%)}
+ .status{font-size:12px;color:#666;margin-top:30px}
 </style></head><body>
 <h1>WinGo Live Results</h1>
 <div class="nav">
@@ -117,16 +138,12 @@ function getStyleClass(colorStr) {
 function renderCard(key, data) {
   const issueEl = document.getElementById('issue-'+key);
   const resultEl = document.getElementById('result-'+key);
-  
   if(!data) {
-    issueEl.textContent = 'ডেটা পাওয়া যায়নি';
-    resultEl.innerHTML = '';
+    issueEl.textContent = 'ডেটা লোড হচ্ছে...';
     return;
   }
-  
   issueEl.textContent = 'Issue: ' + data.issue;
   const style = getStyleClass(data.color);
-  
   resultEl.innerHTML = \`
     <div class="circle \${style.cls}">\${data.number}</div>
     <div class="color-text \${data.color ? data.color.split(',')[0] : ''}">\${style.txt}</div>
@@ -148,31 +165,30 @@ async function poll(){
 }
 
 poll(); 
-setInterval(poll, 3000); // প্রতি ৩ সেকেন্ডে লাইভ আপডেট হবে
+setInterval(poll, 3000);
 </script></body></html>`;
 
-
 // ==========================================
-// ---------- UI: HISTORY PAGE ----------
+// ৪. HTML: হিস্ট্রি পেজ
 // ==========================================
 const HISTORY_PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo History</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
- body{font-family:sans-serif;margin:0;padding:20px;background:#0f0f13;color:#eee;display:flex;flex-direction:column;align-items:center;}
+ body{font-family:sans-serif;margin:0;padding:20px;background:#0f0f13;color:#eee;display:flex;flex-direction:column;align-items:center}
  h1{font-size:24px;margin-bottom:10px;color:#fff}
- .nav{display:flex;gap:15px;margin-bottom:30px;}
+ .nav{display:flex;gap:15px;margin-bottom:30px}
  .nav a{color:#aaa;text-decoration:none;padding:8px 16px;border-radius:8px;background:#1c1c24;border:1px solid #333;font-size:14px;transition:0.3s}
  .nav a.active, .nav a:hover{background:#333;color:#fff}
- .controls{margin-bottom:20px;display:flex;gap:10px;}
- select, button {padding:10px; border-radius:8px; background:#1c1c24; color:#fff; border:1px solid #444; cursor:pointer; font-size:14px;}
- button:hover{background:#333;}
- table{width:100%;max-width:600px;border-collapse:collapse;font-size:14px;background:#1c1c24;border-radius:8px;overflow:hidden;}
- th,td{padding:10px;border-bottom:1px solid #333;text-align:left;}
- th{background:#2a2a35;color:#aaa;font-weight:normal;}
+ .controls{margin-bottom:20px;display:flex;gap:10px}
+ select, button {padding:10px;border-radius:8px;background:#1c1c24;color:#fff;border:1px solid #444;cursor:pointer;font-size:14px}
+ button:hover{background:#333}
+ table{width:100%;max-width:600px;border-collapse:collapse;font-size:14px;background:#1c1c24;border-radius:8px;overflow:hidden}
+ th,td{padding:10px;border-bottom:1px solid #333;text-align:left}
+ th{background:#2a2a35;color:#aaa;font-weight:normal}
  .red{color:#ff4757}.green{color:#2ed573}.violet{color:#a55eea}
- .pagination{display:flex;gap:15px;align-items:center;margin-top:20px;}
- .page-info{font-size:14px;color:#888;}
+ .pagination{display:flex;gap:15px;align-items:center;margin-top:20px}
+ .page-info{font-size:14px;color:#888}
 </style></head><body>
 <h1>WinGo Full History</h1>
 <div class="nav">
@@ -203,7 +219,6 @@ const HISTORY_PAGE = `<!DOCTYPE html>
 
 <script>
 let currentPage = 1;
-
 function cls(c){ if(!c) return ''; if(c.includes('red')) return 'red'; if(c.includes('green')) return 'green'; return 'violet'; }
 
 async function loadHistory(page) {
@@ -215,14 +230,12 @@ async function loadHistory(page) {
   try {
     const res = await fetch('/api/history?game='+game+'&page='+page);
     const j = await res.json();
-    
     if(j.status === 'success'){
       const list = j.data;
       if(list.length === 0) {
         tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">এই পেজে কোনো ডেটা নেই</td></tr>';
         return;
       }
-      
       tbody.innerHTML = list.map(r => 
         '<tr><td>'+r.issue+'</td><td><b>'+r.number+'</b></td><td class="'+cls(r.color)+'">'+r.color+'</td></tr>'
       ).join('');
@@ -236,7 +249,5 @@ async function loadHistory(page) {
     tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">এরর হয়েছে!</td></tr>';
   }
 }
-
-// পেজ লোড হলে ডেটা আনা
 loadHistory(1);
 </script></body></html>`;
