@@ -1,23 +1,60 @@
 const express = require('express');
 const app = express();
 
-const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
-const SUPABASE_URL = 'https://jnhpnsfdnckkpnyrmpkc.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_t52nYcH5sW43P48ZSUE4eg_GWwyg_ma';
+const WORKER_URL = process.env.WORKER_URL || 'https://wingosatafecther.lordpainx4vv.workers.dev';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jnhpnsfdnckkpnyrmpkc.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t52nYcH5sW43P48ZSUE4eg_GWwyg_ma';
 
 // ==========================================
-// Supabase থেকে পুরনো ডেটা (History) আনা
+// CORS (onno site / render theke call korar jonno)
+// ==========================================
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+// ==========================================
+// Helper: timeout shoho fetch
+// ==========================================
+async function fetchJson(url, options = {}, timeoutMs = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Worker response ke ekta standard shape e ana
+function normalize(raw) {
+  if (!raw) return null;
+  const item = Array.isArray(raw.results) ? raw.results[0] : raw;
+  if (!item) return null;
+  return {
+    status: item.status || raw.status || 'success',
+    issue: item.issue,
+    number: item.number,
+    color: item.color
+  };
+}
+
+// ==========================================
+// Supabase theke History
 // ==========================================
 async function getHistoryData(game, page) {
   const limit = 50;
   const offset = (page - 1) * limit;
   try {
     const url = `${SUPABASE_URL}/rest/v1/wingo_history?game=eq.${game}&select=issue,number,color&order=issue.desc&limit=${limit}&offset=${offset}`;
-    const res = await fetch(url, {
+    return await fetchJson(url, {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
   } catch (e) {
     console.error(`[History] ${game} fail —`, e.message);
     return [];
@@ -25,39 +62,7 @@ async function getHistoryData(game, page) {
 }
 
 // ==========================================
-// API Routes
-// ==========================================
-app.get('/api/history', async (req, res) => {
-  const game = req.query.game === 'WinGo_1M' ? 'WinGo_1M' : 'WinGo_30S';
-  const page = parseInt(req.query.page) || 1;
-  const data = await getHistoryData(game, page);
-  res.json({ status: 'success', data: data });
-});
-
-// 🔥 বটের জন্য নতুন এন্ডপয়েন্ট (সরাসরি Worker থেকে ফ্রেশ ডেটা)
-app.get('/api/live', async (req, res) => {
-  try {
-    const [r30S, r1M] = await Promise.all([
-      fetch(`${WORKER_URL}/live?game=WinGo_30S`).then(r => r.json()),
-      fetch(`${WORKER_URL}/live?game=WinGo_1M`).then(r => r.json())
-    ]);
-    res.json({ 
-      status: 'success', 
-      winGo_30S: r30S.results ? r30S.results[0] : null, 
-      winGo_1M: r1M.results ? r1M.results[0] : null 
-    });
-  } catch (e) {
-    res.status(500).json({ status: 'error' });
-  }
-});
-
-// Pages
-app.get('/', (_, res) => res.type('html').send(LIVE_PAGE));
-app.get('/history', (_, res) => res.type('html').send(HISTORY_PAGE));
-app.listen(process.env.PORT || 3000, () => console.log('Server is running!'));
-
-// ==========================================
-// HTML: LIVE PAGE (আপনার ওল্ড কোড)
+// HTML: LIVE PAGE
 // ==========================================
 const LIVE_PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo Live</title>
@@ -97,7 +102,7 @@ const LIVE_PAGE = `<!DOCTYPE html>
     <div id="result-1M"></div>
   </div>
 </div>
-<div class="status" id="status">স্বয়ংক্রিয়ভাবে আপডেট হচ্ছে...</div>
+<div class="status" id="status">স্বয়ংক্রিয়ভাবে আপডেট হচ্ছে...</div>
 
 <script>
 const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
@@ -134,7 +139,7 @@ poll(); setInterval(poll, 3000);
 </script></body></html>`;
 
 // ==========================================
-// HTML: HISTORY PAGE (আপনার ওল্ড কোড)
+// HTML: HISTORY PAGE
 // ==========================================
 const HISTORY_PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo History</title>
@@ -211,8 +216,49 @@ async function loadHistory(page) {
       document.getElementById('btn-next').disabled = (list.length < 50);
     }
   } catch(e) { 
-    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">এরর হয়েছে!</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">এরর হয়েছে!</td></tr>';
   }
 }
 loadHistory(1);
 </script></body></html>`;
+
+// ==========================================
+// API Routes
+// ==========================================
+
+// Render 2 / bot er jonno: live data
+// Response: { status, winGo_30S: {status,issue,number,color}, winGo_1M: {...} }
+app.get('/api/live', async (req, res) => {
+  try {
+    const [r30S, r1M] = await Promise.all([
+      fetchJson(`${WORKER_URL}/live?game=WinGo_30S`),
+      fetchJson(`${WORKER_URL}/live?game=WinGo_1M`)
+    ]);
+    res.json({
+      status: 'success',
+      winGo_30S: normalize(r30S),
+      winGo_1M: normalize(r1M)
+    });
+  } catch (e) {
+    console.error('[Live] fail —', e.message);
+    res.status(500).json({ status: 'error', message: e.message });
+  }
+});
+
+// Render 2 / bot er jonno: history
+// /api/history?game=WinGo_30S&page=1
+app.get('/api/history', async (req, res) => {
+  const game = req.query.game === 'WinGo_1M' ? 'WinGo_1M' : 'WinGo_30S';
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const data = await getHistoryData(game, page);
+  res.json({ status: 'success', game, page, data });
+});
+
+// Ping / UptimeRobot er jonno
+app.get('/health', (_, res) => res.json({ status: 'ok', time: Date.now() }));
+
+// Pages
+app.get('/', (_, res) => res.type('html').send(LIVE_PAGE));
+app.get('/history', (_, res) => res.type('html').send(HISTORY_PAGE));
+
+app.listen(process.env.PORT || 3000, () => console.log('Server is running!'));
