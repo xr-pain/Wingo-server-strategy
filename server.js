@@ -1,46 +1,13 @@
 const express = require('express');
 const app = express();
 
+// আপনার Worker এবং Supabase-এর ডিটেইলস
 const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
 const SUPABASE_URL = 'https://jnhpnsfdnckkpnyrmpkc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_t52nYcH5sW43P48ZSUE4eg_GWwyg_ma';
 
 // ==========================================
-// ১. Worker থেকে লাইভ ডেটা (Fallback সহ)
-// ==========================================
-async function getLiveData(game) {
-  // চেষ্টা ১: Worker থেকে আনা
-  try {
-    const res = await fetch(`${WORKER_URL}/live?game=${game}`, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.results && json.results.length > 0) {
-        return json.results[0]; // Worker সফল হয়েছে
-      }
-    }
-  } catch (e) {
-    console.log(`Worker failed for ${game}, using Supabase backup...`);
-  }
-
-  // চেষ্টা ২: Worker ফেইল করলে Supabase থেকে আনা
-  try {
-    const url = `${SUPABASE_URL}/rest/v1/wingo_history?game=eq.${game}&select=issue,number,color&order=issue.desc&limit=1`;
-    const res = await fetch(url, {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
-      signal: AbortSignal.timeout(5000)
-    });
-    if (res.ok) {
-      const json = await res.json();
-      return json.length > 0 ? json[0] : null;
-    }
-  } catch (e) {
-    console.error(`Supabase backup failed for ${game}`);
-  }
-  return null;
-}
-
-// ==========================================
-// ২. Supabase থেকে হিস্ট্রি ডেটা
+// Supabase থেকে পুরনো ডেটা (History) আনা
 // ==========================================
 async function getHistoryData(game, page) {
   const limit = 50;
@@ -53,21 +20,14 @@ async function getHistoryData(game, page) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (e) {
+    console.error(`[History] ${game} fail —`, e.message);
     return [];
   }
 }
 
 // ==========================================
-// APIs
+// API Routes
 // ==========================================
-app.get('/api/live', async (req, res) => {
-  const [data30S, data1M] = await Promise.all([
-    getLiveData('WinGo_30S'),
-    getLiveData('WinGo_1M')
-  ]);
-  res.json({ status: 'success', winGo_30S: data30S, winGo_1M: data1M });
-});
-
 app.get('/api/history', async (req, res) => {
   const game = req.query.game === 'WinGo_1M' ? 'WinGo_1M' : 'WinGo_30S';
   const page = parseInt(req.query.page) || 1;
@@ -81,7 +41,7 @@ app.get('/history', (_, res) => res.type('html').send(HISTORY_PAGE));
 app.listen(process.env.PORT || 3000, () => console.log('Server is running!'));
 
 // ==========================================
-// ৩. HTML: লাইভ পেজ
+// HTML: LIVE PAGE (লেটেস্ট ডেটা - সরাসরি Worker থেকে)
 // ==========================================
 const LIVE_PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo Live</title>
@@ -124,6 +84,9 @@ const LIVE_PAGE = `<!DOCTYPE html>
 <div class="status" id="status">স্বয়ংক্রিয়ভাবে আপডেট হচ্ছে...</div>
 
 <script>
+// সরাসরি Cloudflare Worker থেকে ডেটা আনবে (Render-এর IP ব্লক হবে না)
+const WORKER_URL = 'https://wingosatafecther.lordpainx4vv.workers.dev';
+
 function getStyleClass(colorStr) {
   if(!colorStr) return {cls: '', txt: ''};
   const c = colorStr.toLowerCase();
@@ -138,8 +101,8 @@ function getStyleClass(colorStr) {
 function renderCard(key, data) {
   const issueEl = document.getElementById('issue-'+key);
   const resultEl = document.getElementById('result-'+key);
-  if(!data) {
-    issueEl.textContent = 'ডেটা লোড হচ্ছে...';
+  if(!data || data.status !== 'success') {
+    issueEl.textContent = 'কানেক্ট হচ্ছে...';
     return;
   }
   issueEl.textContent = 'Issue: ' + data.issue;
@@ -152,24 +115,26 @@ function renderCard(key, data) {
 
 async function poll(){
  try {
-  const res = await fetch('/api/live');
-  const j = await res.json();
-  if(j.status === 'success'){
-    renderCard('30S', j.winGo_30S);
-    renderCard('1M', j.winGo_1M);
-    document.getElementById('status').textContent = 'সর্বশেষ আপডেট: ' + new Date().toLocaleTimeString('en-GB');
-  }
+  const [res30S, res1M] = await Promise.all([
+    fetch(WORKER_URL + '/live?game=WinGo_30S').then(r => r.json()),
+    fetch(WORKER_URL + '/live?game=WinGo_1M').then(r => r.json())
+  ]);
+  
+  renderCard('30S', res30S);
+  renderCard('1M', res1M);
+  document.getElementById('status').textContent = 'সর্বশেষ আপডেট: ' + new Date().toLocaleTimeString('en-GB');
+  
  } catch(e) { 
    document.getElementById('status').textContent = 'কানেকশন এরর!';
  }
 }
 
 poll(); 
-setInterval(poll, 3000);
+setInterval(poll, 3000); // প্রতি ৩ সেকেন্ডে আপডেট হবে
 </script></body></html>`;
 
 // ==========================================
-// ৪. HTML: হিস্ট্রি পেজ
+// HTML: HISTORY PAGE (পুরনো ডেটা - Supabase থেকে)
 // ==========================================
 const HISTORY_PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo History</title>
