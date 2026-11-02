@@ -1,14 +1,18 @@
 const express = require('express');
 const app = express();
 
-const URLS = {
+// বেস URL গুলো
+const BASE_URLS = {
   '30S': 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
   '1M':  'https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json'
 };
 
+// পাবলিক প্রক্সি (Cloudflare বাইপাসের জন্য)
+const PROXY = 'https://api.allorigins.win/raw?url=';
+
 const INTERVAL = 30 * 1000;      // ৩০ সেকেন্ড
 const TIMEOUT  = 10 * 1000;      // ১০ সেকেন্ড
-const RETRIES  = 3;              // ৩ বার রিট্রাই
+const RETRIES  = 3;              // ৩ বার
 const DAILY_CAP = 70000;
 
 const cache = {
@@ -22,44 +26,34 @@ function rollover() {
   if (today() !== counter.date) { counter.date = today(); counter.count = 0; }
 }
 
-// Cloudflare বাইপাস করার ফাংশন
-async function fetchWithTimeout(url) {
-  // got-scraping ডাইনামিক ইমপোর্ট (ESM সাপোর্টের জন্য)
-  const { gotScraping } = await import('got-scraping');
-
-  // API-এর জন্য প্রয়োজনীয় কোয়েরি প্যারামিটার
-  const timestamp = Date.now();
-  const fullUrl = `${url}?pageSize=100&pageNo=1&_t=${timestamp}`;
+async function fetchWithTimeout(key) {
+  const targetUrl = BASE_URLS[key];
+  // প্রক্সি URL তৈরি
+  const proxyUrl = PROXY + encodeURIComponent(targetUrl);
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), TIMEOUT);
 
   try {
-    const res = await gotScraping({
-      url: fullUrl,
-      signal: ctrl.signal,
-      headerGeneratorOptions: {
-        browsers: [{ name: 'chrome' }],
-        devices: ['desktop'],
-        operatingSystems: ['windows'],
-      },
-      headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://draw.ar-lottery01.com/',
-        'Origin': 'https://draw.ar-lottery01.com'
-      }
-    });
-    return JSON.parse(res.body);
+    const res = await fetch(proxyUrl, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    
+    const text = await res.text();
+    // চেক করা হচ্ছে ডেটা JSON কিনা (HTML চ্যালেঞ্জ পেজ আটকাতে)
+    if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+      throw new Error('Cloudflare challenge blocked the proxy');
+    }
+    return JSON.parse(text);
   } finally {
     clearTimeout(t);
   }
 }
 
-async function fetchWithRetry(url) {
+async function fetchWithRetry(key) {
   let lastErr;
   for (let i = 1; i <= RETRIES; i++) {
     try {
-      return await fetchWithTimeout(url);
+      return await fetchWithTimeout(key);
     } catch (e) {
       lastErr = e;
       console.warn(`retry ${i}/${RETRIES} —`, e.message);
@@ -73,7 +67,7 @@ async function fetchData(key) {
   rollover();
   if (counter.count >= DAILY_CAP) return;
   try {
-    const json = await fetchWithRetry(URLS[key]);
+    const json = await fetchWithRetry(key);
     counter.count++;
     cache[key] = { data: json, updatedAt: Date.now() };
     console.log(`[${key}] ok — ${counter.count}/${DAILY_CAP}`);
@@ -92,7 +86,7 @@ app.get('/', (_, res) => res.type('html').send(PAGE));
 
 app.listen(process.env.PORT || 3000, () => console.log('up'));
 
-// ---------- UI (আগের মতোই আছে, শুধু JSON ফিল্ড হ্যান্ডেল করার জন্য আপডেট করা) ----------
+// ---------- UI (আগের মতোই) ----------
 const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>WinGo</title>
 <style>
@@ -119,7 +113,6 @@ function render(key,e){
  const t=document.getElementById('tbl-'+key),m=document.getElementById('meta-'+key);
  if(!e||!e.data){m.textContent='loading…';return;}
  
- // নতুন API-এর JSON স্ট্রাকচার অনুযায়ী ডেটা বের করা
  const list=e.data.data || e.data.list || e.data.results || [];
  const last=list[0];
  
@@ -132,7 +125,7 @@ async function poll(){
  try{
   const j=await(await fetch('/api/data')).json();
   render('30S',j.cache['30S']);render('1M',j.cache['1M']);
-  document.getElementById('counter').textContent='Cloudflare fetch count ('+j.counter.date+'): '+j.counter.count+' / 70000';
+  document.getElementById('counter').textContent='Fetch count ('+j.counter.date+'): '+j.counter.count+' / 70000';
  }catch(e){console.error(e);}
 }
 poll();setInterval(poll,1000);
